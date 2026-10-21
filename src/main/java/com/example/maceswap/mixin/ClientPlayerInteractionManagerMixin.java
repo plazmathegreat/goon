@@ -3,13 +3,11 @@ package com.example.maceswap.mixin;
 import com.example.maceswap.util.GlidingFallTracker;
 import com.example.maceswap.util.SwapHelper;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.network.ClientPlayNetworkHandler;
 import net.minecraft.client.network.ClientPlayerInteractionManager;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.entity.player.PlayerInventory;
 import net.minecraft.item.Items;
-import net.minecraft.network.packet.c2s.play.UpdateSelectedSlotC2SPacket;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
@@ -32,11 +30,10 @@ public abstract class ClientPlayerInteractionManagerMixin {
     private MinecraftClient client;
 
     @Shadow
-    @Final
-    private ClientPlayNetworkHandler networkHandler;
+    public abstract void clickSlot(int syncId, int slotId, int button, SlotActionType actionType, PlayerEntity player);
 
     @Shadow
-    public abstract void clickSlot(int syncId, int slotId, int button, SlotActionType actionType, PlayerEntity player);
+    private void syncSelectedSlot() {}
 
     @Unique
     private int maceswap_elytraHotbarSlot = -1;
@@ -45,11 +42,17 @@ public abstract class ClientPlayerInteractionManagerMixin {
     private int maceswap_originalWeaponSlot = -1;
 
     @Unique
+    private int maceswap_weaponRestoreTicks = 0;
+
+    @Unique
     private int maceswap_windBurstMonitorTicks = 0;
 
     @Inject(method = "attackEntity", at = @At("HEAD"))
     private void maceswap_clientBeforeAttack(PlayerEntity player, Entity target, CallbackInfo ci) {
-        this.maceswap_originalWeaponSlot = -1;
+        // In Singleplayer, PlayerEntityAttackMixin handles the swap directly on the Integrated Server!
+        if (this.client.isInSingleplayer()) {
+            return;
+        }
 
         if (!SwapHelper.canPerformMaceSwap(player)) {
             return;
@@ -86,10 +89,11 @@ public abstract class ClientPlayerInteractionManagerMixin {
         if (!holdingMace && maceSlot != -1) {
             this.maceswap_originalWeaponSlot = inventory.getSelectedSlot();
             inventory.setSelectedSlot(maceSlot);
-            this.networkHandler.sendPacket(new UpdateSelectedSlotC2SPacket(maceSlot));
+            this.syncSelectedSlot();
+            this.maceswap_weaponRestoreTicks = 1;
         }
 
-        this.maceswap_windBurstMonitorTicks = 8;
+        this.maceswap_windBurstMonitorTicks = 10;
 
         player.sendMessage(
                 Text.literal("Attribute Mace Smash! (Fall: " + String.format("%.1f", effectiveFall) + "m)")
@@ -98,18 +102,32 @@ public abstract class ClientPlayerInteractionManagerMixin {
         );
     }
 
-    @Inject(method = "attackEntity", at = @At("RETURN"))
-    private void maceswap_clientAfterAttack(PlayerEntity player, Entity target, CallbackInfo ci) {
-        if (this.maceswap_originalWeaponSlot != -1) {
-            PlayerInventory inventory = player.getInventory();
-            inventory.setSelectedSlot(this.maceswap_originalWeaponSlot);
-            this.networkHandler.sendPacket(new UpdateSelectedSlotC2SPacket(this.maceswap_originalWeaponSlot));
-            this.maceswap_originalWeaponSlot = -1;
-        }
-    }
-
     @Inject(method = "tick", at = @At("HEAD"))
     private void maceswap_onTick(CallbackInfo ci) {
+        if (this.client.isInSingleplayer()) {
+            return;
+        }
+
+        PlayerEntity player = this.client.player;
+        if (player == null) {
+            this.maceswap_elytraHotbarSlot = -1;
+            this.maceswap_originalWeaponSlot = -1;
+            this.maceswap_weaponRestoreTicks = 0;
+            this.maceswap_windBurstMonitorTicks = 0;
+            return;
+        }
+
+        if (this.maceswap_originalWeaponSlot != -1) {
+            if (this.maceswap_weaponRestoreTicks > 0) {
+                this.maceswap_weaponRestoreTicks--;
+            } else {
+                PlayerInventory inventory = player.getInventory();
+                inventory.setSelectedSlot(this.maceswap_originalWeaponSlot);
+                this.syncSelectedSlot();
+                this.maceswap_originalWeaponSlot = -1;
+            }
+        }
+
         if (this.maceswap_elytraHotbarSlot == -1) {
             return;
         }
@@ -117,17 +135,10 @@ public abstract class ClientPlayerInteractionManagerMixin {
             return;
         }
 
-        PlayerEntity player = this.client.player;
-        if (player == null) {
-            this.maceswap_elytraHotbarSlot = -1;
-            this.maceswap_windBurstMonitorTicks = 0;
-            return;
-        }
-
         this.maceswap_windBurstMonitorTicks--;
 
         double verticalVelocity = player.getVelocity().y;
-        boolean windBursted = verticalVelocity > 0.15D;
+        boolean windBursted = verticalVelocity > 0.12D;
 
         if (windBursted && player.currentScreenHandler == player.playerScreenHandler) {
             if (SwapHelper.isGlider(player.getInventory().getStack(this.maceswap_elytraHotbarSlot))) {
