@@ -20,12 +20,15 @@ public final class SwapHelper {
         if (player.isSpectator()) {
             return false;
         }
-        if (!player.isGliding()) {
-            return false;
-        }
 
         ItemStack chestStack = player.getEquippedStack(EquipmentSlot.CHEST);
         if (!isGlider(chestStack)) {
+            return false;
+        }
+
+        // Trigger if actively gliding OR airborne with an Elytra equipped
+        boolean airborneOrGliding = player.isGliding() || !player.isOnGround() || ((GlidingFallTracker) player).maceswap_getEffectiveFallDistance() > 1.5F;
+        if (!airborneOrGliding) {
             return false;
         }
 
